@@ -964,8 +964,14 @@ class Audio:
         await self._join_voice_channel(voice_channel)
 
 
-    @commands.command(pass_context=True, no_pm=True)
-    async def local(self, ctx, name):
+    @commands.group(pass_context=True, no_pm=True)
+    async def local(self, ctx):
+        """Playlist management/control."""
+        if ctx.invoked_subcommand is None:
+            await send_cmd_help(ctx)
+
+    @local.command(pass_context=True, no_pm=True, name="start")
+    async def local_start(self, ctx, name):
         """Plays a local playlist"""
         server = ctx.message.server
         author = ctx.message.author
@@ -1013,6 +1019,20 @@ class Audio:
             return
 
         self._play_local_playlist(server, name)
+
+    @local.command(pass_context=True, no_pm=True, name="list")
+    async def local_list(self, ctx):
+        """Lists all available playlists"""
+        lists = self._list_local_playlists()
+        if lists:
+            msg = "```xl\n"
+            for f in lists:
+                msg += "{}, ".format(f)
+            msg = msg.strip(", ")
+            msg += "```"
+            await self.bot.say("Available playlists:\n{}".format(msg))
+        else:
+            await self.bot.says("There are no playlists.")
 
     @commands.command(pass_context=True, no_pm=True)
     async def pause(self, ctx):
