@@ -630,6 +630,7 @@ class Audio:
         # That ^ creates the audio_player property
 
         voice_client.audio_player.start()
+        self.update_now_playing(song)
         log.debug("starting player on sid {}".format(server.id))
 
         return song
@@ -775,6 +776,7 @@ class Audio:
                                  "NOW_PLAYING": None}
 
     def _stop(self, server):
+        self.update_now_playing()
         self._clear_queue(server)
         self._stop_player(server)
         self._stop_downloader(server)
@@ -1022,11 +1024,12 @@ class Audio:
 
         # We are connected somewhere
         voice_client = self.voice_client(server)
-
+        song = self.queue[server.id]["NOW_PLAYING"]
         if not hasattr(voice_client, 'audio_player'):
             await self.bot.say("Nothing playing, nothing to pause.")
         elif voice_client.audio_player.is_playing():
             voice_client.audio_player.pause()
+            self.update_now_playing(song, True)
             await self.bot.say("Paused.")
         else:
             await self.bot.say("Nothing playing, nothing to pause.")
@@ -1329,18 +1332,20 @@ class Audio:
     async def resume(self, ctx):
         """Resumes a paused song or playlist"""
         server = ctx.message.server
+
         if not self.voice_connected(server):
             await self.bot.say("Not voice connected in this server.")
             return
 
         # We are connected somewhere
         voice_client = self.voice_client(server)
-
+        song = self.queue[server.id]["NOW_PLAYING"]
         if not hasattr(voice_client, 'audio_player'):
             await self.bot.say("Nothing paused, nothing to resume.")
         elif not voice_client.audio_player.is_done() and \
                 not voice_client.audio_player.is_playing():
             voice_client.audio_player.resume()
+            self.update_now_playing(song)
             await self.bot.say("Resuming.")
         else:
             await self.bot.say("Nothing paused, nothing to resume.")
@@ -1418,13 +1423,14 @@ class Audio:
             return False
         return True
 
-    def update_now_playing(self, entry=None, is_paused=False):
+    def update_now_playing(self, song=None, is_paused=False):
         game = None
-        if entry:
+        if song:
             prefix = u'\u275A\u275A ' if is_paused else ''
 
-            name = u'{}{}'.format(prefix, entry.title)[:128]
+            name = u'{}{}'.format(prefix, song.title)[:128]
             game = discord.Game(name=name)
+            log.debug("updating title of bot {}".format(song.title))
 
         self.bot.loop.create_task(self.bot.change_status(game))
 
