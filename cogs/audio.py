@@ -5,6 +5,7 @@ import os
 from random import shuffle, choice
 from cogs.utils.dataIO import fileIO
 from cogs.utils import checks
+from cogs.utils.opus_loader import load_opus_lib
 from __main__ import send_cmd_help
 import re
 import logging
@@ -27,8 +28,7 @@ except:
     youtube_dl = None
 
 try:
-    if not discord.opus.is_loaded():
-        discord.opus.load_opus('libopus-0.dll')
+    load_opus_lib()
 except OSError:  # Incorrect bitness
     opus = False
 except:  # Missing opus
@@ -362,6 +362,7 @@ class Audio:
             self.downloaders[server.id] = Downloader(next_dl.url, max_length,
                                                      download=True)
             self.downloaders[server.id].start()
+
 
     def _dump_cache(self, ignore_desired=False):
         reqd = self._cache_required_files()
@@ -1062,6 +1063,7 @@ class Audio:
                 await self._join_voice_channel(voice_channel)
         else:  # We are connected but not to the right channel
             if self.voice_client(server).channel != voice_channel:
+            #if len(self.bot.voice_clients) == 0 and self.voice_client(server).channel != voice_channel:
                 await self._stop_and_disconnect(server)
                 await self._join_voice_channel(voice_channel)
 
