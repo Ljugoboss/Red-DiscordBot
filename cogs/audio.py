@@ -363,7 +363,6 @@ class Audio:
                                                      download=True)
             self.downloaders[server.id].start()
 
-
     def _dump_cache(self, ignore_desired=False):
         reqd = self._cache_required_files()
         log.debug("required cache files:\n\t{}".format(reqd))
@@ -985,8 +984,10 @@ class Audio:
             else:
                 await self._join_voice_channel(voice_channel)
         else:  # We are connected but not to the right channel
-            if self.voice_client(server).channel != voice_channel:
-                pass  # TODO: Perms
+            #if self.voice_client(server).channel != voice_channel:
+            if len(self.bot.voice_clients) == 0 and self.voice_client(server).channel != voice_channel:
+                await self._stop_and_disconnect(server)
+                await self._join_voice_channel(voice_channel)
 
         # Checking if playing in current server
 
@@ -1062,8 +1063,8 @@ class Audio:
             else:
                 await self._join_voice_channel(voice_channel)
         else:  # We are connected but not to the right channel
-            if self.voice_client(server).channel != voice_channel:
-            #if len(self.bot.voice_clients) == 0 and self.voice_client(server).channel != voice_channel:
+            #if self.voice_client(server).channel != voice_channel:
+            if len(self.bot.voice_clients) == 0 and self.voice_client(server).channel != voice_channel:
                 await self._stop_and_disconnect(server)
                 await self._join_voice_channel(voice_channel)
 
@@ -1213,14 +1214,28 @@ class Audio:
     async def playlist_start(self, ctx, name):
         """Plays a playlist."""
         server = ctx.message.server
-        voice_channel = ctx.message.author.voice_channel
+        author = ctx.message.author
+        voice_channel = author.voice_channel
 
         caller = inspect.currentframe().f_back.f_code.co_name
 
-        if voice_channel is None:
-            await self.bot.say("You must be in a voice channel to start a"
-                               " playlist.")
-            return
+        if not self.voice_connected(server):
+            try:
+                can_connect = self.has_connect_perm(author, server)
+            except AuthorNotConnected:
+                await self.bot.say("You must join a voice channel before I can"
+                                   " play anything.")
+                return
+            if not can_connect:
+                await self.bot.say("I don't have permissions to join your"
+                                   " voice channel.")
+            else:
+                await self._join_voice_channel(voice_channel)
+        else:  # We are connected but not to the right channel
+            #if self.voice_client(server).channel != voice_channel:
+            if len(self.bot.voice_clients) == 0 and self.voice_client(server).channel != voice_channel:
+                await self._stop_and_disconnect(server)
+                await self._join_voice_channel(voice_channel)
 
         if self._playlist_exists(server, name):
             # TODO: permissions checks...
@@ -1403,6 +1418,16 @@ class Audio:
             return False
         return True
 
+    def update_now_playing(self, entry=None, is_paused=False):
+        game = None
+        if entry:
+            prefix = u'\u275A\u275A ' if is_paused else ''
+
+            name = u'{}{}'.format(prefix, entry.title)[:128]
+            game = discord.Game(name=name)
+
+        self.bot.loop.create_task(self.bot.change_status(game))
+
     async def cache_manager(self):
         while self == self.bot.get_cog("Audio"):
             if self._cache_too_large():
@@ -1538,6 +1563,7 @@ class Audio:
     async def queue_scheduler(self):
         while self == self.bot.get_cog('Audio'):
             tasks = []
+            #TODO Find out why crashing here "data/audio/cache\PL151A6924E691DF78: No such file or directory"
             queue = copy.deepcopy(self.queue)
             for sid in queue:
                 if len(queue[sid]["QUEUE"]) == 0 and \
