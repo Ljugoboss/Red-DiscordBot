@@ -634,6 +634,7 @@ class Audio:
 
         return song
 
+
     def _play_playlist(self, server, playlist):
         try:
             songlist = playlist.playlist
@@ -960,6 +961,7 @@ class Audio:
 
         await self._join_voice_channel(voice_channel)
 
+
     @commands.command(pass_context=True, no_pm=True)
     async def local(self, ctx, name):
         """Plays a local playlist"""
@@ -988,8 +990,10 @@ class Audio:
         # Checking if playing in current server
 
         if self.is_playing(server):
-            await self.bot.say("I'm already playing a song on this server!")
-            return  # TODO: Possibly execute queue?
+            #await self.bot.say("I'm already playing a song on this server!")
+            #return  # TODO: Possibly execute queue?
+            server = ctx.message.server
+            self._stop(server)
 
         # If not playing, spawn a downloader if it doesn't exist and begin
         #   downloading the next song
@@ -1035,8 +1039,10 @@ class Audio:
         # Checking if playing in current server
 
         if self.is_playing(server):
-            await self.bot.say("I'm already playing a song on this server!")
-            return  # TODO: Possibly execute queue?
+            #await self.bot.say("I'm already playing a song on this server!")
+            #return  # TODO: Possibly execute queue?
+            server = ctx.message.server
+            self._stop(server)
 
         # Checking already connected, will join if not
 
@@ -1138,7 +1144,7 @@ class Audio:
             playlist.server = server
 
             self._save_playlist(server, name, playlist)
-            await self.bot.say("Playlist '{}' saved. Tracks: {}".format(name, 
+            await self.bot.say("Playlist '{}' saved. Tracks: {}".format(name,
                 len(songlist)))
         else:
             await self.bot.say("That URL is not a valid Soundcloud or YouTube"
@@ -1362,7 +1368,7 @@ class Audio:
             song = self.queue[server.id]["NOW_PLAYING"]
             if song:
                 msg = ("\n**Title:** {}\n**Author:** {}\n**Uploader:** {}\n"
-                "**Views:** {}\n\n<{}>".format(song.title, song.creator, 
+                "**Views:** {}\n\n<{}>".format(song.title, song.creator,
                     song.uploader, song.view_count, song.webpage_url))
                 await self.bot.say(msg.replace("**Author:** None\n", ""))
             else:
@@ -1654,6 +1660,6 @@ def setup(bot):
     bot.add_cog(n)
     bot.add_listener(n.voice_state_update, 'on_voice_state_update')
     bot.loop.create_task(n.queue_scheduler())
-    bot.loop.create_task(n.disconnect_timer())
+    #bot.loop.create_task(n.disconnect_timer())
     bot.loop.create_task(n.reload_monitor())
     bot.loop.create_task(n.cache_scheduler())
