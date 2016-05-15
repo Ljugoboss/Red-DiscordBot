@@ -579,7 +579,7 @@ class Mod:
         server = message.server
         can_delete = message.channel.permissions_for(server.me).manage_messages
 
-        if (message.author.id == self.bot.user.id or 
+        if (message.author.id == self.bot.user.id or
         self.immune_from_filter(message) or not can_delete): # Owner, admins and mods are immune to the filter
             return
 
