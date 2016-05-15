@@ -14,14 +14,15 @@ import traceback
 #
 #  Red, a Discord bot by Twentysix, based on discord.py and its command extension
 #                   https://github.com/Twentysix26/
-#
+# Forked by Ljugoboss
+#                   https://github.com/Ljugoboss/
 #
 # red.py and cogs/utils/checks.py both contain some modified functions originally made by Rapptz
 #             https://github.com/Rapptz/RoboDanny/tree/async
 #
 
 description = """
-Red - A multifunction Discord bot by Twentysix
+Red - A multifunction Discord bot by Twentysix26. Updated by Ljugoboss.
 """
 
 formatter = commands.HelpFormatter(show_check_failure=False)
