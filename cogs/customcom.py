@@ -1,19 +1,21 @@
-import discord
 from discord.ext import commands
-from .utils.dataIO import fileIO
+from .utils.dataIO import dataIO
 from .utils import checks
-from __main__ import user_allowed, send_cmd_help
+from __main__ import user_allowed
 import os
+import re
+
 
 class CustomCommands:
     """Custom commands."""
 
     def __init__(self, bot):
         self.bot = bot
-        self.c_commands = fileIO("data/customcom/commands.json", "load")
+        self.file_path = "data/customcom/commands.json"
+        self.c_commands = dataIO.load_json(self.file_path)
 
     @commands.command(pass_context=True, no_pm=True)
-    @checks.mod_or_permissions(manage_server=True)
+    @checks.mod_or_permissions(administrator=True)
     async def addcom(self, ctx, command : str, *, text):
         """Adds a custom command
 
@@ -31,13 +33,13 @@ class CustomCommands:
         if command not in cmdlist:
             cmdlist[command] = text
             self.c_commands[server.id] = cmdlist
-            fileIO("data/customcom/commands.json", "save", self.c_commands)
+            dataIO.save_json(self.file_path, self.c_commands)
             await self.bot.say("Custom command successfully added.")
         else:
             await self.bot.say("This command already exists. Use editcom to edit it.")
 
     @commands.command(pass_context=True, no_pm=True)
-    @checks.mod_or_permissions(manage_server=True)
+    @checks.mod_or_permissions(administrator=True)
     async def editcom(self, ctx, command : str, *, text):
         """Edits a custom command
 
@@ -51,7 +53,7 @@ class CustomCommands:
             if command in cmdlist:
                 cmdlist[command] = text
                 self.c_commands[server.id] = cmdlist
-                fileIO("data/customcom/commands.json", "save", self.c_commands)
+                dataIO.save_json(self.file_path, self.c_commands)
                 await self.bot.say("Custom command successfully edited.")
             else:
                 await self.bot.say("That command doesn't exist. Use addcom [command] [text]")
@@ -59,7 +61,7 @@ class CustomCommands:
              await self.bot.say("There are no custom commands in this server. Use addcom [command] [text]")
 
     @commands.command(pass_context=True, no_pm=True)
-    @checks.mod_or_permissions(manage_server=True)
+    @checks.mod_or_permissions(administrator=True)
     async def delcom(self, ctx, command : str):
         """Deletes a custom command
 
@@ -72,7 +74,7 @@ class CustomCommands:
             if command in cmdlist:
                 cmdlist.pop(command, None)
                 self.c_commands[server.id] = cmdlist
-                fileIO("data/customcom/commands.json", "save", self.c_commands)
+                dataIO.save_json(self.file_path, self.c_commands)
                 await self.bot.say("Custom command successfully deleted.")
             else:
                 await self.bot.say("That command doesn't exist.")
@@ -118,15 +120,51 @@ class CustomCommands:
             cmdlist = self.c_commands[server.id]
             cmd = msg[len(prefix):]
             if cmd in cmdlist.keys():
-                await self.bot.send_message(message.channel, cmdlist[cmd])
+                cmd = cmdlist[cmd]
+                cmd = self.format_cc(cmd, message)
+                await self.bot.send_message(message.channel, cmd)
             elif cmd.lower() in cmdlist.keys():
-                await self.bot.send_message(message.channel, cmdlist[cmd.lower()])
+                cmd = cmdlist[cmd.lower()]
+                cmd = self.format_cc(cmd, message)
+                await self.bot.send_message(message.channel, cmd)
 
     def get_prefix(self, msg):
         for p in self.bot.command_prefix:
             if msg.startswith(p):
                 return p
         return False
+
+    def format_cc(self, command, message):
+        results = re.findall("\{([^}]+)\}", command)
+        for result in results:
+            param = self.transform_parameter(result, message)
+            command = command.replace("{" + result + "}", param)
+        return command
+
+    def transform_parameter(self, result, message):
+        """
+        For security reasons only specific objects are allowed
+        Internals are ignored
+        """
+        raw_result = "{" + result + "}"
+        objects = {
+            "message" : message,
+            "author"  : message.author,
+            "channel" : message.channel,
+            "server"  : message.server
+        }
+        if result in objects:
+            return str(objects[result])
+        try:
+            first, second = result.split(".")
+        except ValueError:
+            return raw_result
+        if first in objects and not second.startswith("_"):
+            first = objects[first]
+        else:
+            return raw_result
+        return str(getattr(first, second, raw_result))
+
 
 def check_folders():
     if not os.path.exists("data/customcom"):
@@ -135,9 +173,9 @@ def check_folders():
 
 def check_files():
     f = "data/customcom/commands.json"
-    if not fileIO(f, "check"):
+    if not dataIO.is_valid_json(f):
         print("Creating empty commands.json...")
-        fileIO(f, "save", {})
+        dataIO.save_json(f, {})
 
 def setup(bot):
     check_folders()

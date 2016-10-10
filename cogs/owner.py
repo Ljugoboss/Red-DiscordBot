@@ -2,7 +2,8 @@ import discord
 from discord.ext import commands
 from cogs.utils import checks
 from __main__ import set_cog, send_cmd_help, settings
-from .utils.dataIO import fileIO
+from .utils.dataIO import dataIO
+from .utils.chat_formatting import pagify
 
 import importlib
 import traceback
@@ -13,6 +14,7 @@ import datetime
 import glob
 import os
 import time
+import aiohttp
 
 log = logging.getLogger("red.owner")
 
@@ -44,7 +46,12 @@ class Owner:
     def __init__(self, bot):
         self.bot = bot
         self.setowner_lock = False
-        self.disabled_commands = fileIO("data/red/disabled_commands.json", "load")
+        self.file_path = "data/red/disabled_commands.json"
+        self.disabled_commands = dataIO.load_json(self.file_path)
+        self.session = aiohttp.ClientSession(loop=self.bot.loop)
+
+    def __unload(self):
+        self.session.close()
 
     @commands.command()
     @checks.is_owner()
@@ -62,20 +69,22 @@ class Owner:
         except CogLoadError as e:
             log.exception(e)
             traceback.print_exc()
-            await self.bot.say("There was an issue loading the module."
-                               " Check your logs for more information.")
+            await self.bot.say("There was an issue loading the module. Check"
+                               " your console or logs for more information.\n"
+                               "\nError: `{}`".format(e.args[0]))
         except Exception as e:
             log.exception(e)
             traceback.print_exc()
             await self.bot.say('Module was found and possibly loaded but '
-                               'something went wrong.'
-                               ' Check your logs for more information.')
+                               'something went wrong. Check your console '
+                               'or logs for more information.\n\n'
+                               'Error: `{}`'.format(e.args[0]))
         else:
             set_cog(module, True)
             await self.disable_commands()
             await self.bot.say("Module enabled.")
 
-    @commands.command()
+    @commands.group(invoke_without_command=True)
     @checks.is_owner()
     async def unload(self, *, module: str):
         """Unloads a module
@@ -102,6 +111,29 @@ class Owner:
         else:
             await self.bot.say("Module disabled.")
 
+    @unload.command(name="all")
+    @checks.is_owner()
+    async def unload_all(self):
+        """Unloads all modules"""
+        cogs = self._list_cogs()
+        still_loaded = []
+        for cog in cogs:
+            set_cog(cog, False)
+            try:
+                self._unload_cog(cog)
+            except OwnerUnloadWithoutReloadError:
+                pass
+            except CogUnloadError as e:
+                log.exception(e)
+                traceback.print_exc()
+                still_loaded.append(cog)
+        if still_loaded:
+            still_loaded = ", ".join(still_loaded)
+            await self.bot.say("I was unable to unload some cogs: "
+                "{}".format(still_loaded))
+        else:
+            await self.bot.say("All cogs are now unloaded.")
+
     @checks.is_owner()
     @commands.command(name="reload")
     async def _reload(self, module):
@@ -126,7 +158,8 @@ class Owner:
             log.exception(e)
             traceback.print_exc()
             await self.bot.say("That module could not be loaded. Check your"
-                               " logs for more information.")
+                               " console or logs for more information.\n\n"
+                               "Error: `{}`".format(e.args[0]))
         else:
             set_cog(module, True)
             await self.disable_commands()
@@ -142,11 +175,16 @@ class Owner:
         python = '```py\n{}\n```'
         result = None
 
-        local_vars = locals().copy()
-        local_vars['bot'] = self.bot
+        global_vars = globals().copy()
+        global_vars['bot'] = self.bot
+        global_vars['ctx'] = ctx
+        global_vars['message'] = ctx.message
+        global_vars['author'] = ctx.message.author
+        global_vars['channel'] = ctx.message.channel
+        global_vars['server'] = ctx.message.server
 
         try:
-            result = eval(code, globals(), local_vars)
+            result = eval(code, global_vars, locals())
         except Exception as e:
             await self.bot.say(python.format(type(e).__name__ + ': ' + str(e)))
             return
@@ -189,15 +227,16 @@ class Owner:
                              args=(ctx.message.author,))
         t.start()
 
-    @_set.command()
+    @_set.command(pass_context=True)
     @checks.is_owner()
-    async def prefix(self, *prefixes):
-        """Sets prefixes
+    async def prefix(self, ctx, *prefixes):
+        """Sets Red's prefixes
 
-        Must be separated by a space. Enclose in double
-        quotes if a prefix contains spaces."""
+        Accepts multiple prefixes separated by a space. Enclose in double
+        quotes if a prefix contains spaces.
+        Example: set prefix ! $ ? "two words" """
         if prefixes == ():
-            await self.bot.say("Example: setprefix [ ! ^ .")
+            await send_cmd_help(ctx)
             return
 
         self.bot.command_prefix = sorted(prefixes, reverse=True)
@@ -215,8 +254,15 @@ class Owner:
         """Sets Red's name"""
         name = name.strip()
         if name != "":
-            await self.bot.edit_profile(settings.password, username=name)
-            await self.bot.say("Done.")
+            try:
+                await self.bot.edit_profile(settings.password, username=name)
+            except:
+                await self.bot.say("Failed to change name. Remember that you"
+                                   " can only do it up to 2 times an hour."
+                                   "Use nicknames if you need frequent "
+                                   "changes. {}set nickname".format(ctx.prefix))
+            else:
+                await self.bot.say("Done.")
         else:
             await send_cmd_help(ctx)
 
@@ -238,18 +284,84 @@ class Owner:
 
     @_set.command(pass_context=True)
     @checks.is_owner()
-    async def status(self, ctx, *, status=None):
-        """Sets Red's status
+    async def game(self, ctx, *, game=None):
+        """Sets Red's playing status
 
         Leaving this empty will clear it."""
 
-        if status:
-            status = status.strip()
-            await self.bot.change_status(discord.Game(name=status))
-            log.debug('Status set to "{}" by owner'.format(status))
+        server = ctx.message.server
+
+        current_status = server.me.status if server is not None else None
+
+        if game:
+            game = game.strip()
+            await self.bot.change_presence(game=discord.Game(name=game),
+                                           status=current_status)
+            log.debug('Status set to "{}" by owner'.format(game))
         else:
-            await self.bot.change_status(None)
+            await self.bot.change_presence(game=None, status=current_status)
             log.debug('status cleared by owner')
+        await self.bot.say("Done.")
+
+    @_set.command(pass_context=True)
+    @checks.is_owner()
+    async def status(self, ctx, *, status=None):
+        """Sets Red's status
+
+        Statuses:
+            online
+            idle
+            dnd
+            invisible"""
+
+        statuses = {
+                    "online"    : discord.Status.online,
+                    "idle"      : discord.Status.idle,
+                    "dnd"       : discord.Status.dnd,
+                    "invisible" : discord.Status.invisible
+                   }
+
+        server = ctx.message.server
+
+        current_game = server.me.game if server is not None else None
+
+        if status is None:
+            await self.bot.change_presence(status=discord.Status.online,
+                                           game=current_game)
+            await self.bot.say("Status reset.")
+        else:
+            status = statuses.get(status.lower(), None)
+            if status:
+                await self.bot.change_presence(status=status,
+                                               game=current_game)
+                await self.bot.say("Status changed.")
+            else:
+                await send_cmd_help(ctx)
+
+    @_set.command(pass_context=True)
+    @checks.is_owner()
+    async def stream(self, ctx, streamer=None, *, stream_title=None):
+        """Sets Red's streaming status
+
+        Leaving both streamer and stream_title empty will clear it."""
+
+        server = ctx.message.server
+
+        current_status = server.me.status if server is not None else None
+
+        if stream_title:
+            stream_title = stream_title.strip()
+            if "twitch.tv/" not in streamer:
+                streamer = "https://www.twitch.tv/" + streamer
+            game = discord.Game(type=1, url=streamer, name=stream_title)
+            await self.bot.change_presence(game=game, status=current_status)
+            log.debug('Owner has set streaming status and url to "{}" and {}'.format(stream_title, streamer))
+        elif streamer is not None:
+            await send_cmd_help(ctx)
+            return
+        else:
+            await self.bot.change_presence(game=None, status=current_status)
+            log.debug('stream cleared by owner')
         await self.bot.say("Done.")
 
     @_set.command()
@@ -257,13 +369,14 @@ class Owner:
     async def avatar(self, url):
         """Sets Red's avatar"""
         try:
-            async with self.bot.session.get(url) as r:
+            async with self.session.get(url) as r:
                 data = await r.read()
             await self.bot.edit_profile(settings.password, avatar=data)
             await self.bot.say("Done.")
             log.debug("changed avatar")
         except Exception as e:
-            await self.bot.say("Error, check your logs for more information.")
+            await self.bot.say("Error, check your console or logs for "
+                               "more information.")
             log.exception(e)
             traceback.print_exc()
 
@@ -278,7 +391,7 @@ class Owner:
             settings.email = token
             settings.password = ""
             await self.bot.say("Token set. Restart me.")
-            log.debug("Just converted to a bot account.")
+            log.debug("Token changed.")
 
     @commands.command()
     @checks.is_owner()
@@ -308,12 +421,12 @@ class Owner:
         if comm_obj is KeyError:
             await self.bot.say("That command doesn't seem to exist.")
         elif comm_obj is False:
-            await self.bot.say("You cannot disable the commands of the owner cog.")
+            await self.bot.say("You cannot disable owner restricted commands.")
         else:
             comm_obj.enabled = False
             comm_obj.hidden = True
             self.disabled_commands.append(command)
-            fileIO("data/red/disabled_commands.json", "save", self.disabled_commands)
+            dataIO.save_json(self.file_path, self.disabled_commands)
             await self.bot.say("Command has been disabled.")
 
     @command_disabler.command()
@@ -321,7 +434,7 @@ class Owner:
         """Enables commands/subcommands"""
         if command in self.disabled_commands:
             self.disabled_commands.remove(command)
-            fileIO("data/red/disabled_commands.json", "save", self.disabled_commands)
+            dataIO.save_json(self.file_path, self.disabled_commands)
             await self.bot.say("Command enabled.")
         else:
             await self.bot.say("That command is not disabled.")
@@ -343,8 +456,9 @@ class Owner:
                     comm_obj = comm_obj.commands[cmd]
         except KeyError:
             return KeyError
-        if comm_obj.cog_name == "Owner":
-            return False
+        for check in comm_obj.checks:
+            if check.__name__ == "is_owner_check":
+                return False
         return comm_obj
 
     async def disable_commands(self): # runs at boot
@@ -387,7 +501,7 @@ class Owner:
             await self.bot.say("I wasn't able to accept the invite."
                                " Try again.")
 
-    @commands.command(pass_context=True)
+    @commands.command(pass_context=True, no_pm=True)
     @checks.is_owner()
     async def leave(self, ctx):
         """Leaves server"""
@@ -416,7 +530,8 @@ class Owner:
             server_list[str(i)] = servers[i]
             msg += "{}: {}\n".format(str(i), servers[i].name)
         msg += "\nTo leave a server just type its number."
-        await self.bot.say(msg)
+        for page in pagify(msg, ['\n']):
+            await self.bot.say(page)
         while msg != None:
             msg = await self.bot.wait_for_message(author=owner, timeout=15)
             if msg != None:
@@ -427,6 +542,42 @@ class Owner:
                     break
             else:
                 break
+
+    @commands.command(pass_context=True)
+    async def contact(self, ctx, *, message : str):
+        """Sends message to the owner"""
+        if settings.owner == "id_here":
+            await self.bot.say("I have no owner set.")
+            return
+        owner = discord.utils.get(self.bot.get_all_members(), id=settings.owner)
+        author = ctx.message.author
+        if ctx.message.channel.is_private is False:
+            server = ctx.message.server
+            source = ", server **{}** ({})".format(server.name, server.id)
+        else:
+            source = ", direct message"
+        sender = "From **{}** ({}){}:\n\n".format(author, author.id, source)
+        message = sender + message
+        try:
+            await self.bot.send_message(owner, message)
+        except discord.errors.InvalidArgument:
+            await self.bot.say("I cannot send your message, I'm unable to find"
+                               " my owner... *sigh*")
+        except discord.errors.HTTPException:
+            await self.bot.say("Your message is too long.")
+        except:
+            await self.bot.say("I'm unable to deliver your message. Sorry.")
+        else:
+            await self.bot.say("Your message has been sent.")
+
+    @commands.command()
+    async def info(self):
+        """Shows info about Red"""
+        await self.bot.say(
+        "This is an instance of Red, an open source Discord bot created by "
+        "Twentysix and improved by many.\n\n**Github:**\n"
+        "<https://github.com/Twentysix26/Red-DiscordBot/>\n"
+        "**Official server:**\n<https://discord.me/Red-DiscordBot>")
 
     async def leave_confirmation(self, server, owner, ctx):
         if not ctx.message.channel.is_private:
@@ -522,10 +673,12 @@ class Owner:
         return 'Last updated: ``{}``\nCommit: ``{}``\nHash: ``{}``'.format(
             *version)
 
+
 def check_files():
     if not os.path.isfile("data/red/disabled_commands.json"):
         print("Creating empty disabled_commands.json...")
-        fileIO("data/red/disabled_commands.json", "save", [])
+        dataIO.save_json("data/red/disabled_commands.json", [])
+
 
 def setup(bot):
     check_files()

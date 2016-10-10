@@ -1,7 +1,8 @@
 from discord.ext import commands
 import discord
 from cogs.utils.settings import Settings
-import json
+from cogs.utils.dataIO import dataIO
+from cogs.utils.chat_formatting import inline
 import asyncio
 import os
 import time
@@ -25,6 +26,7 @@ description = """
 Red - A multifunction Discord bot by Twentysix26. Updated by Ljugoboss.
 """
 
+
 formatter = commands.HelpFormatter(show_check_failure=False)
 
 bot = commands.Bot(command_prefix=["_"], formatter=formatter,
@@ -32,25 +34,29 @@ bot = commands.Bot(command_prefix=["_"], formatter=formatter,
 
 settings = Settings()
 
-from cogs.utils import checks
-
 
 @bot.event
 async def on_ready():
-    users = str(len(set(bot.get_all_members())))
-    servers = str(len(bot.servers))
-    channels = str(len([c for c in bot.get_all_channels()]))
-    if not "uptime" in dir(bot): #prevents reset in case of reconnection
+    owner_cog = bot.get_cog('Owner')
+    total_cogs = len(owner_cog._list_cogs())
+    users = len(set(bot.get_all_members()))
+    servers = len(bot.servers)
+    channels = len([c for c in bot.get_all_channels()])
+    if not hasattr(bot, "uptime"):
         bot.uptime = int(time.perf_counter())
+    if settings.login_type == "token" and settings.owner == "id_here":
+        await set_bot_owner()
     print('------')
-    print(bot.user.name + " is now online.")
+    print("{} is now online.".format(bot.user.name))
     print('------')
     print("Connected to:")
-    print(servers + " servers")
-    print(channels + " channels")
-    print(users + " users")
-    print("\n{0} active cogs with {1} commands\n".format(
-        str(len(bot.cogs)), str(len(bot.commands))))
+    print("{} servers".format(servers))
+    print("{} channels".format(channels))
+    print("{} users".format(users))
+    print("\n{}/{} active cogs with {} commands".format(
+        len(bot.cogs), total_cogs, len(bot.commands)))
+    prefix_label = "Prefixes:" if len(bot.command_prefix) > 1 else "Prefix:"
+    print("{} {}\n".format(prefix_label, " ".join(bot.command_prefix)))
     if settings.login_type == "token":
         print("------")
         print("Use this url to bring your bot to a server:")
@@ -74,12 +80,29 @@ async def on_message(message):
 
 @bot.event
 async def on_command_error(error, ctx):
+    channel = ctx.message.channel
     if isinstance(error, commands.MissingRequiredArgument):
         await send_cmd_help(ctx)
     elif isinstance(error, commands.BadArgument):
         await send_cmd_help(ctx)
     elif isinstance(error, commands.DisabledCommand):
-        await bot.send_message(ctx.message.channel, "That command is disabled.")
+        await bot.send_message(channel, "That command is disabled.")
+    elif isinstance(error, commands.CommandInvokeError):
+        logger.exception("Exception in command '{}'".format(
+            ctx.command.qualified_name), exc_info=error.original)
+        oneliner = "Error in command '{}' - {}: {}".format(
+            ctx.command.qualified_name, type(error.original).__name__,
+            str(error.original))
+        await ctx.bot.send_message(channel, inline(oneliner))
+    elif isinstance(error, commands.CommandNotFound):
+        pass
+    elif isinstance(error, commands.CheckFailure):
+        pass
+    elif isinstance(error, commands.NoPrivateMessage):
+        await bot.send_message(channel, "That command is not "
+                                        "available in DMs.")
+    else:
+        logger.exception(type(error).__name__, exc_info=error)
 
 async def send_cmd_help(ctx):
     if ctx.invoked_subcommand:
@@ -97,6 +120,9 @@ def user_allowed(message):
     author = message.author
 
     mod = bot.get_cog('Mod')
+
+    if author.bot:
+        return False
 
     if mod is not None:
         if settings.owner == author.id:
@@ -130,14 +156,20 @@ def user_allowed(message):
 
 
 async def get_oauth_url():
-    endpoint = "https://discordapp.com/api/oauth2/applications/@me"
-    if bot.headers.get('authorization') is None:
-        bot.headers['authorization'] = "Bot {}".format(settings.email)
+    try:
+        data = await bot.application_info()
+    except AttributeError:
+        return "Your discord.py is outdated. Couldn't retrieve invite link."
+    return discord.utils.oauth_url(data.id)
 
-    async with bot.session.get(endpoint, headers=bot.headers) as resp:
-        data = await resp.json()
-
-    return discord.utils.oauth_url(data.get('id'))
+async def set_bot_owner():
+    try:
+        data = await bot.application_info()
+        settings.owner = data.owner.id
+    except AttributeError:
+        print("Your discord.py is outdated. Couldn't retrieve owner's ID.")
+        return
+    print("{} has been recognized and set as owner.".format(data.owner.name))
 
 
 def check_folders():
@@ -172,51 +204,56 @@ def check_configs():
                   "process.")
             exit(1)
 
-        print("\nChoose a prefix (or multiple ones, one at once) for the "
-              "commands. Type exit when you're done. Example prefix: !")
-        prefixes = []
-        new_prefix = ""
-        while new_prefix.lower() != "exit" or prefixes == []:
-            new_prefix = input("Prefix> ")
-            if new_prefix.lower() != "exit" and new_prefix != "":
-                prefixes.append(new_prefix)
-                # Remember we're using property's here, oh well...
-        settings.prefixes = sorted(prefixes, reverse=True)
+        print("\nChoose a prefix. A prefix is what you type before a command.\n"
+              "A typical prefix would be the exclamation mark.\n"
+              "Can be multiple characters. You will be able to change it "
+              "later and add more of them.\nChoose your prefix:")
+        confirmation = False
+        while confirmation is False:
+            new_prefix = ensure_reply("\nPrefix> ").strip()
+            print("\nAre you sure you want {0} as your prefix?\nYou "
+                  "will be able to issue commands like this: {0}help"
+                  "\nType yes to confirm or no to change it".format(new_prefix))
+            confirmation = get_answer()
 
-        print("\nIf you know what an User ID is, input *your own* now and"
-              " press enter.")
-        print("Otherwise you can just set yourself as owner later with "
-              "'[prefix]set owner'. Leave empty and press enter in this case.")
-        settings.owner = input("\nID> ")
-        if settings.owner == "":
-            settings.owner = "id_here"
-        if not settings.owner.isdigit() or len(settings.owner) < 17:
-            if settings.owner != "id_here":
-                print("\nERROR: What you entered is not a valid ID. Set "
-                      "yourself as owner later with [prefix]set owner")
+        settings.prefixes = [new_prefix]
+        if settings.login_type == "email":
+            print("\nOnce you're done with the configuration, you will have to type "
+                  "'{}set owner' *in Discord's chat*\nto set yourself as owner.\n"
+                  "Press enter to continue".format(new_prefix))
+            settings.owner = input("") # Shh, they will never know it's here
+            if settings.owner == "":
+                settings.owner = "id_here"
+            if not settings.owner.isdigit() or len(settings.owner) < 17:
+                if settings.owner != "id_here":
+                    print("\nERROR: What you entered is not a valid ID. Set "
+                          "yourself as owner later with {}set owner".format(new_prefix))
+                settings.owner = "id_here"
+        else:
             settings.owner = "id_here"
 
-        print("\nInput the admin role's name. Anyone with this role will be "
+        print("\nInput the admin role's name. Anyone with this role in Discord will be "
               "able to use the bot's admin commands")
         print("Leave blank for default name (Transistor)")
         settings.default_admin = input("\nAdmin role> ")
         if settings.default_admin == "":
             settings.default_admin = "Transistor"
 
-        print("\nInput the moderator role's name. Anyone with this role will "
+        print("\nInput the moderator role's name. Anyone with this role in Discord will "
               "be able to use the bot's mod commands")
         print("Leave blank for default name (Process)")
         settings.default_mod = input("\nModerator role> ")
         if settings.default_mod == "":
             settings.default_mod = "Process"
 
-    cogs_s_path = "data/red/cogs.json"
-    cogs = {}
-    if not os.path.isfile(cogs_s_path):
-        print("Creating new cogs.json...")
-        with open(cogs_s_path, "w") as f:
-            f.write(json.dumps(cogs))
+        print("\nThe configuration is done. Leave this window always open to keep "
+              "Red online.\nAll commands will have to be issued through Discord's "
+              "chat, *this window will now be read only*.\nPress enter to continue")
+        input("\n")
 
+    if not os.path.isfile("data/red/cogs.json"):
+        print("Creating new cogs.json...")
+        dataIO.save_json("data/red/cogs.json", {})
 
 def set_logger():
     global logger
@@ -250,6 +287,11 @@ def set_logger():
     logger.addHandler(fhandler)
     logger.addHandler(stdout_handler)
 
+def ensure_reply(msg):
+    choice = ""
+    while choice == "":
+        choice = input(msg)
+    return choice
 
 def get_answer():
     choices = ("yes", "y", "no", "n")
@@ -261,14 +303,10 @@ def get_answer():
     else:
         return False
 
-
 def set_cog(cog, value):
-    with open('data/red/cogs.json', "r") as f:
-        data = json.load(f)
+    data = dataIO.load_json("data/red/cogs.json")
     data[cog] = value
-    with open('data/red/cogs.json', "w") as f:
-        f.write(json.dumps(data))
-
+    dataIO.save_json("data/red/cogs.json", data)
 
 def load_cogs():
     try:
@@ -280,8 +318,7 @@ def load_cogs():
         no_prompt = False
 
     try:
-        with open('data/red/cogs.json', "r") as f:
-            registry = json.load(f)
+        registry = dataIO.load_json("data/red/cogs.json")
     except:
         registry = {}
 
@@ -302,7 +339,10 @@ def load_cogs():
         if extension.lower() == "cogs.owner":
             continue
         in_reg = extension in registry
-        if not (in_reg or no_prompt):
+        if in_reg is False:
+            if no_prompt is True:
+                registry[extension] = False
+                continue
             print("\nNew extension: {}".format(extension))
             print("Load it?(y/n)")
             if not get_answer():
@@ -320,8 +360,7 @@ def load_cogs():
             registry[extension] = False
 
     if extensions:
-        with open('data/red/cogs.json', "w") as f:
-            f.write(json.dumps(registry))
+        dataIO.save_json("data/red/cogs.json", registry)
 
     if failed:
         print("\nFailed to load: ", end="")
@@ -334,7 +373,6 @@ def load_cogs():
 
 def main():
     global settings
-    global checks
 
     check_folders()
     check_configs()
@@ -349,17 +387,21 @@ def main():
             print("Use !set prefix to set it.")
         else:
             print("Once you're owner use !set prefix to set it.")
-    if settings.owner == "id_here":
+    if settings.owner == "id_here" and settings.login_type == "email":
         print("Owner has not been set yet. Do '{}set owner' in chat to set "
               "yourself as owner.".format(bot.command_prefix[0]))
     else:
         owner_cog.owner.hidden = True  # Hides the set owner command from help
     print("-- Logging in.. --")
-    print("Make sure to keep your bot updated by using: git pull")
-    print("and: pip3 install --upgrade git+https://github.com/Rapptz/"
-          "discord.py@async")
+    if os.name == "nt" and os.path.isfile("update.bat"):
+        print("Make sure to keep your bot updated by running the file "
+              "update.bat")
+    else:
+        print("Make sure to keep your bot updated by using: git pull")
+        print("and: pip3 install -U git+https://github.com/Rapptz/"
+              "discord.py@master#egg=discord.py[voice]")
+    print("Official server: https://discord.me/Red-DiscordBot")
     if settings.login_type == "token":
-        owner_cog._token.hidden = True
         try:
             yield from bot.login(settings.email)
         except TypeError as e:
@@ -374,19 +416,31 @@ def main():
     yield from bot.connect()
 
 if __name__ == '__main__':
+    error = False
     loop = asyncio.get_event_loop()
     try:
         loop.run_until_complete(main())
     except discord.LoginFailure:
+        error = True
         logger.error(traceback.format_exc())
-        print("Invalid login credentials. Restart Red and configure it"
-              " properly.")
-        shutil.copy('data/red/settings.json',
-                    'data/red/settings-{}.bak'.format(int(time.time())))
-        # Hopefully this won't backfire in case of discord servers' problems
-        os.remove('data/red/settings.json')
+        choice = input("Invalid login credentials. "
+            "If they worked before Discord might be having temporary "
+            "technical issues.\nIn this case, press enter and "
+            "try again later.\nOtherwise you can type 'reset' to "
+            "delete the current configuration and redo the setup process "
+            "again the next start.\n> ")
+        if choice.strip() == "reset":
+            shutil.copy('data/red/settings.json',
+                        'data/red/settings-{}.bak'.format(int(time.time())))
+            os.remove('data/red/settings.json')
+    except KeyboardInterrupt:
+        loop.run_until_complete(bot.logout())
     except:
+        error = True
         logger.error(traceback.format_exc())
         loop.run_until_complete(bot.logout())
     finally:
         loop.close()
+
+        if error:
+            exit(1)
